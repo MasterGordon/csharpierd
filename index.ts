@@ -1,5 +1,7 @@
 #!/usr/bin/env bun
 
+import path from "path";
+
 const STATE_FILE = "/tmp/csharpierd-state.json";
 const LOCK_FILE = "/tmp/csharpierd.lock";
 const SERVER_PORT = 18912;
@@ -205,7 +207,7 @@ async function formatCode(
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        fileName: `/tmp/${fileName}`,
+        fileName: path.join(process.cwd(), fileName),
         fileContents,
       }),
     });
@@ -297,7 +299,9 @@ async function showStatus(): Promise<void> {
   if (!state) {
     console.log(colorize("Status:", "cyan"), colorize("NOT RUNNING", "red"));
     console.log("\nNo server is currently active.");
-    console.log("The server will start automatically on the first format request.");
+    console.log(
+      "The server will start automatically on the first format request.",
+    );
     return;
   }
 
@@ -329,9 +333,17 @@ async function showStatus(): Promise<void> {
   const timeoutMinutes = IDLE_TIMEOUT_MS / 1000 / 60;
 
   if (idleMinutes >= timeoutMinutes) {
-    console.log(colorize("Idle Time:", "cyan"), colorize(idleTimeStr, "red"), "(will shutdown)");
+    console.log(
+      colorize("Idle Time:", "cyan"),
+      colorize(idleTimeStr, "red"),
+      "(will shutdown)",
+    );
   } else if (idleMinutes >= timeoutMinutes * 0.75) {
-    console.log(colorize("Idle Time:", "cyan"), colorize(idleTimeStr, "yellow"), `(${timeoutMinutes - idleMinutes}m until timeout)`);
+    console.log(
+      colorize("Idle Time:", "cyan"),
+      colorize(idleTimeStr, "yellow"),
+      `(${timeoutMinutes - idleMinutes}m until timeout)`,
+    );
   } else {
     console.log(colorize("Idle Time:", "cyan"), colorize(idleTimeStr, "green"));
   }

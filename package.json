@@ -1,6 +1,6 @@
 {
   "name": "csharpierd",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A persistent CSharpier formatting daemon with automatic server management and idle timeout",
   "module": "index.ts",
   "type": "module",
