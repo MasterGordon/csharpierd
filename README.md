@@ -145,7 +145,7 @@ require("conform").setup({
   formatters = {
     csharpierd = {
       command = "csharpierd",
-      args = { "$FILENAME" },
+      args = { "$RELATIVE_FILEPATH" },
       stdin = true,
     },
   },

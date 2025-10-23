@@ -199,6 +199,9 @@ async function formatCode(
   fileContents: string,
 ): Promise<string> {
   const state = await ensureServer();
+  const filePath = path.isAbsolute(fileName)
+    ? fileName
+    : path.join(process.cwd(), fileName);
 
   try {
     const response = await fetch(`http://localhost:${state.port}/format`, {
@@ -207,7 +210,7 @@ async function formatCode(
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        fileName: path.join(process.cwd(), fileName),
+        fileName: filePath,
         fileContents,
       }),
     });
