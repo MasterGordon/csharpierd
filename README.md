@@ -152,32 +152,6 @@ require("conform").setup({
 })
 ```
 
-#### With Lazy.nvim
-
-```lua
-{
-  "stevearc/conform.nvim",
-  event = { "BufWritePre" },
-  cmd = { "ConformInfo" },
-  opts = {
-    formatters_by_ft = {
-      cs = { "csharpierd" },
-    },
-    formatters = {
-      csharpierd = {
-        command = "csharpierd",
-        args = { "$FILENAME" },
-        stdin = true,
-      },
-    },
-    format_on_save = {
-      timeout_ms = 5000,
-      lsp_fallback = true,
-    },
-  },
-}
-```
-
 ### Benefits of using csharpierd with conform.nvim
 
 - **Fast formatting**: Reuses the CSharpier server process, avoiding startup overhead
