@@ -1,12 +1,33 @@
 {
   "name": "csharpierd",
+  "version": "1.0.0",
+  "description": "A persistent CSharpier formatting daemon with automatic server management and idle timeout",
   "module": "index.ts",
   "type": "module",
-  "private": true,
+  "bin": {
+    "csharpierd": "./index.ts"
+  },
+  "scripts": {
+    "format": "bun index.ts",
+    "build": "bun build --compile --minify ./index.ts --outfile csharpierd"
+  },
+  "keywords": [
+    "csharpier",
+    "formatter",
+    "csharp",
+    "dotnet",
+    "daemon",
+    "persistent"
+  ],
+  "author": "",
+  "license": "MIT",
   "devDependencies": {
     "@types/bun": "latest"
   },
   "peerDependencies": {
     "typescript": "^5"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
   }
 }

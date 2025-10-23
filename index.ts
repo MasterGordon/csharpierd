@@ -5,6 +5,18 @@ const LOCK_FILE = "/tmp/csharpierd.lock";
 const SERVER_PORT = 18912;
 const IDLE_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
 
+// Color utilities using Bun.color
+const RESET = "\x1b[0m";
+const BOLD = "\x1b[1m";
+
+const colorize = (text: string, color: string): string => {
+  return `${Bun.color(color, "ansi")}${text}${RESET}`;
+};
+
+const bold = (text: string): string => {
+  return `${BOLD}${text}${RESET}`;
+};
+
 interface ServerState {
   pid: number;
   port: number;
@@ -221,11 +233,142 @@ async function formatCode(
   }
 }
 
+// Show help message
+function showHelp(): void {
+  console.log(`csharpierd - CSharpier formatting daemon
+
+Usage:
+  csharpierd <filename> < input.cs    Format C# code from stdin
+  csharpierd --status                 Show server status
+  csharpierd --stop                   Stop the background server
+  csharpierd --help                   Show this help message
+
+Description:
+  A persistent CSharpier formatting daemon that starts a background server
+  on first use and reuses it for subsequent formatting requests. The server
+  automatically shuts down after 1 hour of inactivity.
+
+Examples:
+  # Format a C# file
+  csharpierd Program.cs < Program.cs
+
+  # Format and save to a new file
+  csharpierd MyFile.cs < MyFile.cs > MyFile.formatted.cs
+
+  # Using cat
+  cat Program.cs | csharpierd Program.cs
+
+  # Check server status
+  csharpierd --status
+
+  # Stop the background server
+  csharpierd --stop
+
+Server Details:
+  Port:          ${SERVER_PORT}
+  State File:    ${STATE_FILE}
+  Lock File:     ${LOCK_FILE}
+  Idle Timeout:  ${IDLE_TIMEOUT_MS / 1000 / 60} minutes
+`);
+}
+
+// Stop the server
+async function stopServer(): Promise<void> {
+  const state = await loadState();
+
+  if (!state) {
+    console.error("No server is currently running");
+    return;
+  }
+
+  console.error(`Stopping CSharpier server (PID ${state.pid})...`);
+  await killServer(state.pid);
+  await Bun.$`rm -f ${STATE_FILE} ${LOCK_FILE}`.quiet();
+  console.error("Server stopped successfully");
+}
+
+// Show server status
+async function showStatus(): Promise<void> {
+  const state = await loadState();
+
+  console.log(bold("\nCSharpier Server Status"));
+  console.log("═".repeat(50));
+
+  if (!state) {
+    console.log(colorize("Status:", "cyan"), colorize("NOT RUNNING", "red"));
+    console.log("\nNo server is currently active.");
+    console.log("The server will start automatically on the first format request.");
+    return;
+  }
+
+  // Check if process is actually running
+  const isRunning = await isProcessRunning(state.pid);
+  const isResponsive = isRunning ? await isServerResponsive(state.port) : false;
+
+  if (isRunning && isResponsive) {
+    console.log(colorize("Status:", "cyan"), colorize("RUNNING", "green"));
+  } else if (isRunning && !isResponsive) {
+    console.log(colorize("Status:", "cyan"), colorize("STARTING", "yellow"));
+  } else {
+    console.log(colorize("Status:", "cyan"), colorize("STOPPED", "red"));
+  }
+
+  console.log(colorize("PID:", "cyan"), state.pid);
+  console.log(colorize("Port:", "cyan"), state.port);
+
+  // Calculate and display uptime
+  const now = Date.now();
+  const lastAccess = new Date(state.lastAccess);
+  const idleTime = now - state.lastAccess;
+  const idleMinutes = Math.floor(idleTime / 1000 / 60);
+  const idleSeconds = Math.floor((idleTime / 1000) % 60);
+
+  console.log(colorize("Last Access:", "cyan"), lastAccess.toLocaleString());
+
+  const idleTimeStr = `${idleMinutes}m ${idleSeconds}s`;
+  const timeoutMinutes = IDLE_TIMEOUT_MS / 1000 / 60;
+
+  if (idleMinutes >= timeoutMinutes) {
+    console.log(colorize("Idle Time:", "cyan"), colorize(idleTimeStr, "red"), "(will shutdown)");
+  } else if (idleMinutes >= timeoutMinutes * 0.75) {
+    console.log(colorize("Idle Time:", "cyan"), colorize(idleTimeStr, "yellow"), `(${timeoutMinutes - idleMinutes}m until timeout)`);
+  } else {
+    console.log(colorize("Idle Time:", "cyan"), colorize(idleTimeStr, "green"));
+  }
+
+  console.log(colorize("State File:", "cyan"), STATE_FILE);
+  console.log(colorize("Lock File:", "cyan"), LOCK_FILE);
+  console.log(colorize("Idle Timeout:", "cyan"), `${timeoutMinutes} minutes`);
+  console.log("");
+}
+
 // Main
 async function main() {
-  const fileName = process.argv[2];
+  const arg = process.argv[2];
+
+  // Handle --help flag
+  if (arg === "--help" || arg === "-h") {
+    showHelp();
+    process.exit(0);
+  }
+
+  // Handle --status flag
+  if (arg === "--status") {
+    await showStatus();
+    process.exit(0);
+  }
+
+  // Handle --stop flag
+  if (arg === "--stop") {
+    await stopServer();
+    process.exit(0);
+  }
+
+  // Normal formatting mode
+  const fileName = arg;
   if (!fileName) {
-    console.error("Usage: bun index.ts <filename> < input.cs");
+    console.error("Usage: csharpierd <filename> < input.cs");
+    console.error("Try 'csharpierd --help' for more information");
     process.exit(1);
   }
 
