@@ -244,6 +244,7 @@ function showHelp(): void {
 
 Usage:
   csharpierd <filename> < input.cs    Format C# code from stdin
+  csharpierd --start                  Start and prewarm the server
   csharpierd --status                 Show server status
   csharpierd --stop                   Stop the background server
   csharpierd --help                   Show this help message
@@ -254,6 +255,9 @@ Description:
   automatically shuts down after 1 hour of inactivity.
 
 Examples:
+  # Start and prewarm the server
+  csharpierd --start
+
   # Format a C# file
   csharpierd Program.cs < Program.cs
 
@@ -376,6 +380,13 @@ async function main() {
   // Handle --stop flag
   if (arg === "--stop") {
     await stopServer();
+    process.exit(0);
+  }
+
+  // Handle --start flag
+  if (arg === "--start") {
+    await ensureServer();
+    console.error("CSharpier server is ready");
     process.exit(0);
   }
 
