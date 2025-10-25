@@ -79,7 +79,7 @@ async function isProcessRunning(pid: number): Promise<boolean> {
 async function isServerResponsive(port: number): Promise<boolean> {
   try {
     const response = await fetch(`http://localhost:${port}/`, {
-      signal: AbortSignal.timeout(2000),
+      signal: AbortSignal.timeout(50),
     });
     return response.ok || response.status === 404; // Server is up if it responds at all
   } catch {
@@ -109,8 +109,8 @@ async function startServer(): Promise<number> {
   const proc = Bun.spawn(
     ["dotnet", "csharpier", "server", "--server-port", String(SERVER_PORT)],
     {
-      stdout: "inherit",
-      stderr: "inherit",
+      stdout: null,
+      stderr: null,
     },
   );
 
