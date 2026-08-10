@@ -4,7 +4,12 @@ import path from "path";
 
 const STATE_FILE = "/tmp/csharpierd-state.json";
 const LOCK_FILE = "/tmp/csharpierd.lock";
+// CSharpier >= 1.3.0 serves via HttpListener, which matches requests against the
+// registered prefix `http://127.0.0.1:<port>/` by Host header. A request sent to
+// "localhost" carries `Host: localhost:<port>`, does not match, and gets a 404.
+const SERVER_HOST = "127.0.0.1";
 const SERVER_PORT = 18912;
+const MIN_CSHARPIER_VERSION = "1.3.0";
 const IDLE_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
 
 // Color utilities using Bun.color
@@ -24,6 +29,10 @@ interface ServerState {
   port: number;
   lastAccess: number;
 }
+
+// Expected failures (bad setup, CSharpier rejecting a file). These are reported
+// as a plain message, since a stack trace only adds noise to an editor's log.
+class CsharpierdError extends Error {}
 
 // Acquire lock to prevent race conditions
 async function acquireLock(): Promise<boolean> {
@@ -78,32 +87,114 @@ async function isProcessRunning(pid: number): Promise<boolean> {
 // Check if server is responsive
 async function isServerResponsive(port: number): Promise<boolean> {
   try {
-    const response = await fetch(`http://localhost:${port}/`, {
+    const response = await fetch(`http://${SERVER_HOST}:${port}/`, {
       signal: AbortSignal.timeout(50),
     });
-    return response.ok || response.status === 404; // Server is up if it responds at all
+    // CSharpier answers GET / with 405 (only POST is allowed), so any response
+    // means the server is up. A 404 means we reached something that is not a
+    // CSharpier server, so don't treat it as healthy.
+    return response.status !== 404;
   } catch {
     return false;
   }
 }
 
-// Kill server process
+// Collect a process and all of its descendants, deepest first
+async function collectTree(pid: number): Promise<number[]> {
+  const children = await Bun.$`pgrep -P ${pid}`
+    .quiet()
+    .nothrow()
+    .text()
+    .then((out) =>
+      out
+        .split("\n")
+        .map((line) => Number(line.trim()))
+        .filter((child) => Number.isInteger(child) && child > 0),
+    )
+    .catch(() => [] as number[]);
+
+  const descendants = await Promise.all(children.map(collectTree));
+  return [...descendants.flat(), pid];
+}
+
+// Kill a server process together with its children. `dotnet csharpier` is only a
+// launcher: it spawns the real CSharpier.dll process, which owns the port. Killing
+// the launcher alone leaves that child orphaned and still holding SERVER_PORT.
 async function killServer(pid: number): Promise<void> {
   try {
-    await Bun.$`kill ${pid}`.quiet();
-    // Wait a bit and force kill if needed
+    const tree = await collectTree(pid);
+    await Bun.$`kill ${tree}`.quiet().nothrow();
+    // Wait a bit and force kill whatever survived
     await Bun.sleep(500);
-    if (await isProcessRunning(pid)) {
-      await Bun.$`kill -9 ${pid}`.quiet();
+    const survivors: number[] = [];
+    for (const treePid of tree) {
+      if (await isProcessRunning(treePid)) survivors.push(treePid);
+    }
+    if (survivors.length > 0) {
+      await Bun.$`kill -9 ${survivors}`.quiet().nothrow();
     }
   } catch {
     // Ignore errors
   }
 }
 
+// Find the process listening on a port, if any
+async function findPortOwner(port: number): Promise<number | null> {
+  const output = await Bun.$`ss -ltnpH sport = :${port}`
+    .quiet()
+    .nothrow()
+    .text()
+    .catch(() => "");
+  const match = output.match(/pid=(\d+)/);
+  return match ? Number(match[1]) : null;
+}
+
+// Reclaim the port from a server we no longer track, so the new one can bind it
+async function reclaimPort(): Promise<void> {
+  const owner = await findPortOwner(SERVER_PORT);
+  if (owner === null) return;
+  console.error(
+    `Port ${SERVER_PORT} held by untracked process ${owner}, reclaiming...`,
+  );
+  await killServer(owner);
+}
+
+// Verify the installed CSharpier speaks the protocol this daemon targets.
+// 1.3.0 moved server mode onto HttpListener, which changed how requests are
+// routed; older releases are not supported.
+async function assertSupportedCSharpier(): Promise<void> {
+  const output = await Bun.$`dotnet csharpier --version`
+    .quiet()
+    .nothrow()
+    .text()
+    .catch(() => "");
+  const match = output.match(/(\d+)\.(\d+)\.(\d+)/);
+
+  if (!match) {
+    throw new CsharpierdError(
+      "Could not determine the CSharpier version. Is CSharpier installed? " +
+        `csharpierd requires CSharpier ${MIN_CSHARPIER_VERSION} or newer (1.x).`,
+    );
+  }
+
+  const [, major, minor] = match.map(Number) as [unknown, number, number];
+  if (major !== 1 || minor < 3) {
+    throw new CsharpierdError(
+      `CSharpier ${match[0]} is not supported. csharpierd requires ` +
+        `CSharpier ${MIN_CSHARPIER_VERSION} or newer (1.x).`,
+    );
+  }
+}
+
 // Start CSharpier server
 async function startServer(): Promise<number> {
+  await assertSupportedCSharpier();
+
   console.error("Starting CSharpier server...");
+
+  // A stale server would keep the port and silently answer our health checks
+  // while the process we spawn dies with "address already in use".
+  await reclaimPort();
 
   // Start server in background
   const proc = Bun.spawn(
@@ -157,19 +248,24 @@ async function ensureServer(): Promise<ServerState> {
       // Check idle timeout
       await cleanupIdleServer(state);
 
-      // Verify server is still running and responsive
-      if (
-        (await isProcessRunning(state.pid)) &&
-        (await isServerResponsive(state.port))
-      ) {
-        return state;
-      } else {
-        console.error(
-          "Server process not found or not responsive, restarting...",
-        );
-        if (await isProcessRunning(state.pid)) {
-          await killServer(state.pid);
+      // Responsiveness is what actually matters; the tracked PID is only used to
+      // shut the server down later.
+      if (await isServerResponsive(state.port)) {
+        if (!(await isProcessRunning(state.pid))) {
+          // The launcher exited but the server it spawned is still serving.
+          // Re-point the state at the process that owns the port so --stop works.
+          const owner = await findPortOwner(state.port);
+          if (owner !== null) {
+            state.pid = owner;
+            await saveState(state);
+          }
         }
+        return state;
+      }
+
+      console.error("Server not responsive, restarting...");
+      if (await isProcessRunning(state.pid)) {
+        await killServer(state.pid);
       }
     }
 
@@ -203,39 +299,36 @@ async function formatCode(
     ? fileName
     : path.join(process.cwd(), fileName);
 
-  try {
-    const response = await fetch(`http://localhost:${state.port}/format`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        fileName: filePath,
-        fileContents,
-      }),
-    });
+  const response = await fetch(`http://${SERVER_HOST}:${state.port}/format`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      fileName: filePath,
+      fileContents,
+    }),
+  });
 
-    if (!response.ok) {
-      throw new Error(
-        `Server returned ${response.status}: ${await response.text()}`,
-      );
-    }
-
-    const result = (await response.json()) as FormatResult;
-
-    // Update last access time
-    state.lastAccess = Date.now();
-    await saveState(state);
-
-    if (!result.formattedFile) {
-      throw new Error(result.errorMessage);
-    }
-
-    return result.formattedFile;
-  } catch (error) {
-    console.error("Error formatting code:", error);
-    throw error;
+  if (!response.ok) {
+    throw new CsharpierdError(
+      `CSharpier server returned ${response.status}: ${await response.text()}`,
+    );
   }
+
+  const result = (await response.json()) as FormatResult;
+
+  // Update last access time
+  state.lastAccess = Date.now();
+  await saveState(state);
+
+  if (!result.formattedFile) {
+    throw new CsharpierdError(
+      result.errorMessage ?? `CSharpier returned status "${result.status}"`,
+    );
+  }
+
+  return result.formattedFile;
 }
 
 // Show help message
@@ -419,6 +512,10 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error("Fatal error:", error);
+  if (error instanceof CsharpierdError) {
+    console.error(`csharpierd: ${error.message}`);
+  } else {
+    console.error("Fatal error:", error);
+  }
   process.exit(1);
 });

@@ -13,7 +13,24 @@ A persistent CSharpier formatting daemon with automatic server management and id
 ## Requirements
 
 - [Bun](https://bun.sh) runtime (>= 1.0.0)
-- [CSharpier](https://csharpier.com/) installed globally or locally
+- [CSharpier](https://csharpier.com/) **1.3.0 or newer** (1.x), installed globally or locally
+
+### Supported CSharpier versions
+
+| csharpierd | CSharpier         |
+| ---------- | ----------------- |
+| >= 2.0.0   | 1.3.0 – 1.x       |
+| <= 1.0.5   | 1.2.x and earlier |
+
+CSharpier 1.3.0 replaced the ASP.NET Core host of `csharpier server` with a plain
+`HttpListener`. `HttpListener` matches incoming requests against its registered
+prefix (`http://127.0.0.1:<port>/`) **by `Host` header**, so requests addressed to
+`localhost` no longer match and are answered with `404 Not Found`. csharpierd now
+talks to `127.0.0.1` directly.
+
+csharpierd checks the installed CSharpier version before starting the server and
+fails with a clear message on unsupported versions rather than producing confusing
+404s. If you are stuck on an older CSharpier, pin `csharpierd@1.0.5`.
 
 ## Installation
 
@@ -45,6 +62,7 @@ bun install
 
 ```bash
 csharpierd <filename> < input.cs    # Format C# code from stdin
+csharpierd --start                  # Start and prewarm the server
 csharpierd --status                 # Show server status
 csharpierd --stop                   # Stop the background server
 csharpierd --help                   # Show help message
@@ -159,15 +177,20 @@ require("conform").setup({
 
 ## How It Works
 
-1. **First Call**: Starts `dotnet csharpier server --server-port 78912` in the background
+1. **First Call**: Starts `dotnet csharpier server --server-port 18912` in the background
 2. **Subsequent Calls**: Reuses the existing server process
 3. **Idle Timeout**: Server automatically shuts down after 1 hour of inactivity
 4. **State Management**: Server state (PID, port, last access time) stored in `/tmp/csharpierd-state.json`
 5. **Concurrency**: Lock file prevents race conditions when multiple instances run simultaneously
 
+`dotnet csharpier` is only a launcher — it spawns the actual CSharpier process,
+which is what binds the port. csharpierd therefore shuts a server down by killing
+the whole process tree, and reclaims the port from an untracked server left behind
+by an earlier run before starting a new one.
+
 ## Server Details
 
-- **Port**: 78912 (hardcoded)
+- **Port**: 18912 (hardcoded, bound to `127.0.0.1`)
 - **State File**: `/tmp/csharpierd-state.json`
 - **Lock File**: `/tmp/csharpierd.lock`
 - **Idle Timeout**: 1 hour (3600000ms)
